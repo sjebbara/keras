@@ -113,16 +113,16 @@ layer_output = get_3rd_layer_output(X)
 
 # with a Graph model
 get_conv_layer_output = theano.function([model.inputs[i].input for i in model.input_order],
-                                        model.outputs['conv'].get_output(train=False),
+                                        model.nodes['conv'].get_output(train=False),
                                         on_unused_input='ignore')
-conv_output = get_conv_output(input_data_dict)
+conv_output = get_conv_layer_output([input_data_dict[i] for i in model.input_order])
 ```
 
 ---
 
 ### Isn't there a bug with Merge or Graph related to input concatenation?
 
-Yes, there was a known bug with tensor concatenation in Thenao that was fixed early 2015.
+Yes, there was a known bug with tensor concatenation in Theano that was fixed early 2015.
 Please upgrade to the latest version of Theano:
 
 ```bash
@@ -155,7 +155,7 @@ Find out more in the [callbacks documentation](callbacks.md).
 
 ### How is the validation split computed?
 
-If you set the `validation_split` arugment in `model.fit` to e.g. 0.1, then the validation data used will be the *last 10%* of the data. If you set it to 0.25, it will be the last 25% of the data, etc.
+If you set the `validation_split` argument in `model.fit` to e.g. 0.1, then the validation data used will be the *last 10%* of the data. If you set it to 0.25, it will be the last 25% of the data, etc.
 
 
 ---
@@ -191,7 +191,7 @@ When using stateful RNNs, it is therefore assumed that:
 
 To use statefulness in RNNs, you need to:
 
-- explicitely specify the batch size you are using, by passing a `batch_input_shape` argument to the first layer in your model. It should be a tuple of integers, e.g. `(32, 10, 16)` for a 32-samples batch of sequences of 10 timesteps with 16 features per timestep.
+- explicitly specify the batch size you are using, by passing a `batch_input_shape` argument to the first layer in your model. It should be a tuple of integers, e.g. `(32, 10, 16)` for a 32-samples batch of sequences of 10 timesteps with 16 features per timestep.
 - set `stateful=True` in your RNN layer(s).
 
 To reset the states accumulated:

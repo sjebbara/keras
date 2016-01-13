@@ -236,6 +236,27 @@ def permute_dimensions(x, pattern):
     return tf.transpose(x, perm=pattern)
 
 
+def resize_images(X, height_factor, width_factor, dim_ordering):
+    '''Resize the images contained in a 4D tensor of shape
+    - [batch, channels, height, width] (for 'th' dim_ordering)
+    - [batch, height, width, channels] (for 'tf' dim_ordering)
+    by a factor of (height_factor, width_factor). Both factors should be
+    positive integers.
+    '''
+    if dim_ordering == 'th':
+        new_height = shape(X)[2].value * height_factor
+        new_width = shape(X)[3].value * width_factor
+        X = permute_dimensions(X, [0, 2, 3, 1])
+        X = tf.image.resize_nearest_neighbor(X, (new_height, new_width))
+        return permute_dimensions(X, [0, 3, 1, 2])
+    elif dim_ordering == 'tf':
+        new_height = shape(X)[1].value * height_factor
+        new_width = shape(X)[2].value * width_factor
+        return tf.image.resize_nearest_neighbor(X, (new_height, new_width))
+    else:
+        raise Exception('Invalid dim_ordering: ' + dim_ordering)
+
+
 def repeat_elements(x, rep, axis):
     '''Repeats the elements of a tensor along an axis, like np.repeat
 
@@ -266,6 +287,10 @@ def tile(x, n):
 
 
 def flatten(x):
+    return tf.reshape(x, [-1])
+
+
+def batch_flatten(x):
     '''Turn a n-D tensor into a 2D tensor where
     the first dimension is conserved.
     '''
@@ -324,12 +349,16 @@ def set_value(x, value):
 class Function(object):
 
     def __init__(self, inputs, outputs, updates=[]):
+        assert type(inputs) in {list, tuple}
+        assert type(outputs) in {list, tuple}
+        assert type(updates) in {list, tuple}
         self.inputs = list(inputs)
         self.outputs = list(outputs)
         with tf.control_dependencies(self.outputs):
             self.updates = [tf.assign(p, new_p) for (p, new_p) in updates]
 
     def __call__(self, inputs):
+        assert type(inputs) in {list, tuple}
         names = [v.name for v in self.inputs]
         feed_dict = dict(zip(names, inputs))
         session = _get_session()
@@ -421,7 +450,7 @@ def rnn(step_function, inputs, initial_states,
     new_states = successive_states[-1]
 
     outputs = tf.transpose(outputs, (1, 0, 2))
-    return last_output, outputs, states
+    return last_output, outputs, new_states
 
 
 def switch(condition, then_expression, else_expression):
@@ -508,6 +537,12 @@ def dropout(x, level, seed=None):
     # the dummy 1. works around a TF bug
     # (float32_ref vs. float32 incomptability)
     return tf.nn.dropout(x * 1., retain_prob, seed=seed)
+
+
+def l2_normalize(x, axis):
+    if axis < 0:
+        axis = axis % len(x.get_shape())
+    return tf.nn.l2_normalize(x, dim=axis)
 
 
 # CONVOLUTIONS

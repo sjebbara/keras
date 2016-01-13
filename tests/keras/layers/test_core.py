@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+from keras.models import Sequential
 from numpy.testing import assert_allclose
 
 from keras import backend as K
@@ -113,9 +114,35 @@ def test_autoencoder():
     _runner(layer)
 
 
+def test_autoencoder_second_layer():
+    # regression test for issue #1275
+    encoder = core.Dense(input_dim=10, output_dim=2)
+    decoder = core.Dense(input_dim=2, output_dim=10)
+    model = Sequential()
+    model.add(core.Dense(input_dim=20, output_dim=10))
+    model.add(core.AutoEncoder(encoder=encoder, decoder=decoder,
+                               output_reconstruction=False))
+    model.compile(loss='mse', optimizer='sgd')
+
+
 def test_maxout_dense():
     layer = core.MaxoutDense(10, 10, input_shape=(20,))
     _runner(layer)
+
+
+def test_naming():
+    layer = core.Dense(2, input_dim=2)
+    assert layer.name == 'dense'
+
+    model = Sequential()
+    model.add(core.Dense(2, input_dim=2, name='my_dense'))
+    model.add(core.Dense(2, name='my_dense'))
+
+    assert model.layers[0].name == 'my_dense'
+    assert model.layers[1].name == 'my_dense'
+
+    model.compile(optimizer='rmsprop', loss='mse')
+    model.train_on_batch(np.random.random((2, 2)), np.random.random((2, 2)))
 
 
 @pytest.mark.skipif(K._BACKEND == 'tensorflow',

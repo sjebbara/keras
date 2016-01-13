@@ -59,7 +59,7 @@ def slice_X(X, start=None, stop=None):
     '''
     if type(X) == list:
         if hasattr(start, '__len__'):
-            # hdf5 dataset only support list object as indices
+            # hdf5 datasets only support list objects as indices
             if hasattr(start, 'shape'):
                 start = start.tolist()
             return [x[start] for x in X]
@@ -81,10 +81,12 @@ def weighted_objective(fn):
         # score_array has ndim >= 2
         score_array = fn(y_true, y_pred)
         if mask is not None:
+            # Cast the mask to floatX to avoid float64 upcasting in theano
+            mask = K.cast(mask, K.floatx())
             # mask should have the same shape as score_array
             score_array *= mask
             #  the loss per batch should be proportional
-            #  to the number of unmasked sampled.
+            #  to the number of unmasked samples.
             score_array /= K.mean(mask)
 
         # reduce score_array to 1D
@@ -154,6 +156,16 @@ def model_from_config(config, custom_objects={}):
     if 'optimizer' in config:
         # if it has an optimizer, the model is assumed to be compiled
         loss = config.get('loss')
+
+        # if a custom loss function is passed replace it in loss
+        if model_name == 'Graph':
+            for l in loss:
+                for c in custom_objects:
+                    if loss[l] == c:
+                        loss[l] = custom_objects[c]
+        elif model_name == 'Sequential' and loss in custom_objects:
+            loss = custom_objects[loss]
+
         class_mode = config.get('class_mode')
 
         optimizer_params = dict([(k, v) for k, v in config.get('optimizer').items()])
@@ -368,8 +380,21 @@ class Model(object):
         `keras.models.from_json(json_string, custom_objects={})`.
         '''
         import json
+
+        def get_json_type(obj):
+
+            # if obj is any numpy type
+            if type(obj).__module__ == np.__name__:
+                return obj.item();
+
+            # if obj is a python 'type'
+            if type(obj).__name__ == type.__name__:
+                return obj.__name__
+
+            raise TypeError('Not JSON Serializable')
+
         config = self.get_config()
-        return json.dumps(config, **kwargs)
+        return json.dumps(config, default=get_json_type, **kwargs)
 
     def summary(self):
         '''Print out a summary of the model architecture,
@@ -399,7 +424,7 @@ class Sequential(Model, containers.Sequential):
         self.optimizer = optimizers.get(optimizer)
 
         self.loss = objectives.get(loss)
-        weighted_loss = weighted_objective(objectives.get(loss))
+        weighted_loss = weighted_objective(self.loss)
 
         # input of model
         self.X_train = self.get_input(train=True)
@@ -453,15 +478,15 @@ class Sequential(Model, containers.Sequential):
         self._train = K.function(train_ins, [train_loss], updates=updates)
         self._train_with_acc = K.function(train_ins, [train_loss, train_accuracy], updates=updates)
         self._predict = K.function(predict_ins, [self.y_test], updates=self.state_updates)
-        self._test = K.function(test_ins, [test_loss])
-        self._test_with_acc = K.function(test_ins, [test_loss, test_accuracy])
+        self._test = K.function(test_ins, [test_loss], updates=self.state_updates)
+        self._test_with_acc = K.function(test_ins, [test_loss, test_accuracy], updates=self.state_updates)
 
     def fit(self, X, y, batch_size=128, nb_epoch=100, verbose=1, callbacks=[],
             validation_split=0., validation_data=None, shuffle=True,
             show_accuracy=False, class_weight=None, sample_weight=None):
         '''Train the model for a fixed number of epochs.
 
-        Returns a history object. It `history` attribute is a record of
+        Returns a history object. Its `history` attribute is a record of
         training loss values at successive epochs,
         as well as validation loss values (if applicable).
 
@@ -498,6 +523,20 @@ class Sequential(Model, containers.Sequential):
                 output timesteps, which is useful
                 in sequence to sequence learning.
         '''
+        if type(X) == list:
+            if len(set([len(a) for a in X] + [len(y)])) != 1:
+                raise Exception('All input arrays and the target array must '
+                                'have the same number of samples.')
+        else:
+            if len(X) != len(y):
+                raise Exception('The input data tensor (X) and '
+                                'the target tensor (y) must have '
+                                'the same number of samples. Found: '
+                                'len(X) = {}, len(y) = {}'.format(len(X), len(y)))
+        if sample_weight is not None:
+            assert len(sample_weight) == len(y), ('"sample_weight" must have '
+                                                  'the same number of samples '
+                                                  'as X and y.')
         X = standardize_X(X)
         y = standardize_y(y)
 
@@ -511,11 +550,20 @@ class Sequential(Model, containers.Sequential):
         if validation_data:
             if len(validation_data) == 2:
                 X_val, y_val = validation_data
+                if type(X_val) == list:
+                    assert len(set([len(a) for a in X_val] + [len(y_val)])) == 1
+                else:
+                    assert len(X_val) == len(y_val)
                 X_val = standardize_X(X_val)
                 y_val = standardize_y(y_val)
                 sample_weight_val = standardize_weights(y_val)
             elif len(validation_data) == 3:
                 X_val, y_val, sample_weight_val = validation_data
+                if type(X_val) == list:
+                    assert len(set([len(a) for a in X_val] +
+                                   [len(y_val), len(sample_weight_val)])) == 1
+                else:
+                    assert len(X_val) == len(y_val) == len(sample_weight_val)
                 X_val = standardize_X(X_val)
                 y_val = standardize_y(y_val)
                 sample_weight_val = standardize_weights(y_val,
@@ -619,6 +667,20 @@ class Sequential(Model, containers.Sequential):
             verbose: verbosity mode, 0 or 1.
             sample_weight: sample weights, as a numpy array.
         '''
+        if type(X) == list:
+            if len(set([len(a) for a in X] + [len(y)])) != 1:
+                raise Exception('All input arrays and the target array must '
+                                'have the same number of samples.')
+        else:
+            if len(X) != len(y):
+                raise Exception('The input data tensor (X) and '
+                                'the target tensor (y) must have '
+                                'the same number of samples. Found: '
+                                'len(X) = {}, len(y) = {}'.format(len(X), len(y)))
+        if sample_weight is not None:
+            assert len(sample_weight) == len(y), ('"sample_weight" must have '
+                                                  'the same number of samples '
+                                                  'as X and y.')
         X = standardize_X(X)
         y = standardize_y(y)
         sample_weight = standardize_weights(y, sample_weight=sample_weight)
@@ -643,6 +705,20 @@ class Sequential(Model, containers.Sequential):
 
         Arguments: see `fit` method.
         '''
+        if type(X) == list:
+            if len(set([len(a) for a in X] + [len(y)])) != 1:
+                raise Exception('All input arrays and the target array must '
+                                'have the same number of samples.')
+        else:
+            if len(X) != len(y):
+                raise Exception('The input data tensor (X) and '
+                                'the target tensor (y) must have '
+                                'the same number of samples. Found: '
+                                'len(X) = {}, len(y) = {}'.format(len(X), len(y)))
+        if sample_weight is not None:
+            assert len(sample_weight) == len(y), ('"sample_weight" must have '
+                                                  'the same number of samples '
+                                                  'as X and y.')
         X = standardize_X(X)
         y = standardize_y(y)
         sample_weight = standardize_weights(y, class_weight=class_weight,
@@ -659,6 +735,20 @@ class Sequential(Model, containers.Sequential):
 
         Arguments: see `fit` method.
         '''
+        if type(X) == list:
+            if len(set([len(a) for a in X] + [len(y)])) != 1:
+                raise Exception('All input arrays and the target array must '
+                                'have the same number of samples.')
+        else:
+            if len(X) != len(y):
+                raise Exception('The input data tensor (X) and '
+                                'the target tensor (y) must have '
+                                'the same number of samples. Found: '
+                                'len(X) = {}, len(y) = {}'.format(len(X), len(y)))
+        if sample_weight is not None:
+            assert len(sample_weight) == len(y), ('"sample_weight" must have '
+                                                  'the same number of samples '
+                                                  'as X and y.')
         X = standardize_X(X)
         y = standardize_y(y)
         sample_weight = standardize_weights(y, sample_weight=sample_weight)
@@ -821,12 +911,21 @@ class Sequential(Model, containers.Sequential):
                 raise Exception('The generator output must be a tuple.')
             if len(generator_output) == 2:
                 X, y = generator_output
+                if type(X) == list:
+                    assert len(set([len(a) for a in X] + [len(y)])) == 1
+                else:
+                    assert len(X) == len(y)
                 sample_weight = None
             elif len(generator_output) == 3:
                 X, y, sample_weight = generator_output
+                if type(X) == list:
+                    assert len(set([len(a) for a in X] + [len(y), len(sample_weight)])) == 1
+                else:
+                    assert len(X) == len(y) == len(sample_weight)
             else:
                 _stop.set()
-                raise Exception('The generator output tuple must have 2 or 3 elements.')
+                raise Exception('The generator output tuple must have '
+                                '2 or 3 elements.')
             return X, y, sample_weight
 
         # start generator thread storing batches into a queue
@@ -843,7 +942,7 @@ class Sequential(Model, containers.Sequential):
                         i += 1
                     else:
                         time.sleep(wait_time)
-                except KeyboardInterrupt:
+                except:
                     _stop.set()
                     return
 
@@ -975,7 +1074,7 @@ class Graph(Model, containers.Graph):
         self.loss = loss
 
         self._train = K.function(train_ins, [train_loss], updates=updates)
-        self._test = K.function(test_ins, [test_loss])
+        self._test = K.function(test_ins, [test_loss], updates=self.state_updates)
         self._predict = K.function(inputs=ins, outputs=ys_test,
                                    updates=self.state_updates)
 
@@ -984,7 +1083,7 @@ class Graph(Model, containers.Graph):
             class_weight={}, sample_weight={}):
         '''Train the model for a fixed number of epochs.
 
-        Returns a history object. It `history` attribute is a record of
+        Returns a history object. Its `history` attribute is a record of
         training loss values at successive epochs,
         as well as validation loss values (if applicable).
 
@@ -1013,6 +1112,9 @@ class Graph(Model, containers.Graph):
         '''
         X = [data[name] for name in self.input_order]
         y = [standardize_y(data[name]) for name in self.output_order]
+        if len(set([len(a) for a in X] + [len(a) for a in y])) != 1:
+            raise Exception('All input arrays and target arrays must have '
+                            'the same number of samples.')
 
         sample_weight_list = [standardize_weights(y[i],
                                                   sample_weight=sample_weight.get(self.output_order[i])) for i in range(len(self.output_order))]
@@ -1057,8 +1159,10 @@ class Graph(Model, containers.Graph):
         '''
         sample_weight = [standardize_weights(data[name],
                                              sample_weight=sample_weight.get(name)) for name in self.output_order]
-
         ins = [data[name] for name in self.input_order] + [standardize_y(data[name]) for name in self.output_order] + sample_weight
+        if len(set([len(a) for a in ins])) != 1:
+            raise Exception('All input arrays and target arrays must have '
+                            'the same number of samples.')
         outs = self._test_loop(self._test, ins, batch_size, verbose)
         return outs[0]
 
@@ -1069,6 +1173,9 @@ class Graph(Model, containers.Graph):
         Arguments: see `fit` method.
         '''
         ins = [data[name] for name in self.input_order]
+        if len(set([len(a) for a in ins])) != 1:
+            raise Exception('All input arrays and target arrays must have '
+                            'the same number of samples.')
         outs = self._predict_loop(self._predict, ins, batch_size, verbose)
         return dict(zip(self.output_order, outs))
 
@@ -1081,6 +1188,9 @@ class Graph(Model, containers.Graph):
                                              sample_weight=sample_weight.get(name),
                                              class_weight=class_weight.get(name)) for name in self.output_order]
         ins = [data[name] for name in self.input_order] + [standardize_y(data[name]) for name in self.output_order] + sample_weight
+        if len(set([len(a) for a in ins])) != 1:
+            raise Exception('All input arrays and target arrays must have '
+                            'the same number of samples.')
         return self._train(ins)
 
     def test_on_batch(self, data, sample_weight={}):
@@ -1091,12 +1201,18 @@ class Graph(Model, containers.Graph):
         sample_weight = [standardize_weights(data[name],
                                              sample_weight=sample_weight.get(name)) for name in self.output_order]
         ins = [data[name] for name in self.input_order] + [standardize_y(data[name]) for name in self.output_order] + sample_weight
+        if len(set([len(a) for a in ins])) != 1:
+            raise Exception('All input arrays and target arrays must have '
+                            'the same number of samples.')
         return self._test(ins)
 
     def predict_on_batch(self, data):
         '''Generate predictions for a single batch of samples.
         '''
         ins = [data[name] for name in self.input_order]
+        if len(set([len(a) for a in ins])) != 1:
+            raise Exception('All input arrays and target arrays must have '
+                            'the same number of samples.')
         outs = self._predict(ins)
         return dict(zip(self.output_order, outs))
 
@@ -1247,6 +1363,10 @@ class Graph(Model, containers.Graph):
                                 '(data, sample_weight).')
             assert type(data) == dict
             assert type(sample_weight) == dict
+            if len(set([len(data[name]) for name in data.keys()] +
+                       [len(sample_weight[name]) for name in sample_weight.keys()])) != 1:
+                raise Exception('All input arrays and target arrays must have '
+                                'the same number of samples.')
             return data, sample_weight
 
         # start generator thread storing batches into a queue
@@ -1263,7 +1383,7 @@ class Graph(Model, containers.Graph):
                         i += 1
                     else:
                         time.sleep(wait_time)
-                except KeyboardInterrupt:
+                except:
                     _stop.set()
                     return
 
